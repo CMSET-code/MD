@@ -1,0 +1,153 @@
+
+clear
+units           metal
+dimension       3
+boundary        p p p
+atom_style      atomic
+
+# ===============================================================================
+# SYSTEM SETUP
+# ===============================================================================
+
+# ----- Lattice (Ti HCP) -----
+lattice         hcp 2.950
+region          box block 0 10 0 10 0 10 units lattice
+create_box      1 box
+create_atoms    1 box
+
+# ----- Atomic Properties -----
+mass            1 47.867           # Ti atomic mass (amu)
+
+# ----- Interatomic Potential -----
+pair_style      eam/fs
+pair_coeff      * * Ti.eam Ti
+
+# ----- Neighbor List Settings -----
+neighbor        2.0 bin
+neigh_modify    delay 5 every 1 check yes
+
+# ===============================================================================
+# ENERGY MINIMIZATION
+# ===============================================================================
+
+reset_timestep  0
+thermo          100
+thermo_style    custom step pe ke etotal press temp lx ly lz vol density
+
+min_style       cg
+minimize        1.0e-8 1.0e-10 10000 100000
+
+write_data      Ti_minimized.data
+
+print "=========================================="
+print "Energy Minimization Complete"
+print "=========================================="
+
+# ===============================================================================
+# SIMULATION PARAMETERS
+# ===============================================================================
+
+timestep        0.001              
+variable        T_start equal 300.0    
+variable        P equal 1.0            
+
+# Damping parameters
+variable        tdamp equal 0.1   
+variable        pdamp equal 1.0    
+
+# ===============================================================================
+# COMPUTES FOR THERMODYNAMIC ANALYSIS
+# ===============================================================================
+
+compute         ctemp all temp
+compute         cpe   all pe/atom
+compute         cke   all ke/atom
+
+
+variable        enthalpy equal enthalpy
+
+# Global properties
+variable        pe_total equal pe
+variable        ke_total equal ke
+variable        etotal equal etotal
+variable        press equal press
+variable        vol equal vol
+variable        dens equal density
+variable        lx equal lx
+variable        ly equal ly
+variable        lz equal lz
+variable        temp equal temp
+
+# ===============================================================================
+# STRUCTURE ANALYSIS - Common Neighbor Analysis (CNA) for phase identification
+# ===============================================================================
+
+compute         cna all cna/atom 3.5
+compute         centro all centro/atom fcc
+
+# ===============================================================================
+# PHASE 1: NPT EQUILIBRATION AT 300 K
+# ===============================================================================
+
+reset_timestep  0
+
+fix             npt_equil all npt temp ${T_start} ${T_start} ${tdamp} iso ${P} ${P} ${pdamp}
+
+thermo          500
+thermo_style    custom step time temp pe ke etotal press vol density lx ly lz enthalpy
+
+dump            equil_dump all custom 2000 Ti_equilibration.dump id type x y z c_cna c_centro
+
+fix             equil_avg all ave/time 10 100 1000 v_temp v_pe_total v_ke_total &
+                v_etotal v_press v_vol v_dens v_enthalpy &
+                file equilibration_300K.dat
+
+run             50000              # 50 ps equilibration at 300 K
+
+unfix           npt_equil
+unfix           equil_avg
+undump          equil_dump
+
+write_data      Ti_equilibrated_300K.data
+
+
+
+# Heating parameters
+variable        T_end equal 1900.0      # Final temperature (K) - above melting
+variable        heating_rate equal 1.0  # K/ps (heating rate)
+variable        total_time equal (v_T_end-v_T_start)/v_heating_rate  # Total heating time
+
+# Calculate number of steps needed
+variable        heating_steps equal round(v_total_time/dt)
+
+
+# NPT with temperature ramp
+fix             npt_heat all npt temp ${T_start} ${T_end} ${tdamp} iso ${P} ${P} ${pdamp}
+
+# Thermodynamic output
+thermo          1000
+thermo_style    custom step time temp pe ke etotal press vol density lx ly lz enthalpy
+
+# Dump trajectory with structure info (for visualization and phase identification)
+dump            heat_dump all custom 5000 Ti_heating.dump id type x y z c_cna c_centro
+
+# CRITICAL: High-frequency data collection for Cp calculation
+# Collect data every 0.1 ps to capture phase transitions accurately
+fix             heat_avg all ave/time 10 10 100 v_temp v_pe_total v_ke_total &
+                v_etotal v_press v_vol v_dens v_enthalpy &
+                file heating_data.dat
+
+# Additional file: Average properties over longer intervals for cleaner plots
+fix             heat_avg_smooth all ave/time 100 100 10000 v_temp v_pe_total v_ke_total &
+                v_etotal v_press v_vol v_dens v_enthalpy &
+                file heating_data_smooth.dat
+
+run             ${heating_steps}
+
+unfix           npt_heat
+unfix           heat_avg
+unfix           heat_avg_smooth
+undump          heat_dump
+
+write_data      Ti_heated_final.data
+
